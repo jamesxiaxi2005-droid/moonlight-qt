@@ -3133,8 +3133,8 @@ bool Session::rebuildDecoderForReconnect()
     const VrrPolicy::SyncDecision sync = VrrPolicy::decide(
         { m_Preferences->enableVsync, m_Preferences->framePacing, m_Preferences->enableVrr,
           m_StreamConfig.fps, displayHz, tryNonaryVrr });
-    const bool smoothVrr = VrrPolicy::smoothEnabled(sync.enableVrr, m_Preferences->vrrSmooth,
-                                                    tryNonaryVrr);
+    const bool smoothVrr =
+        VrrPolicy::smoothEnabled(sync.enableVrr, m_Preferences->vrrSmooth, tryNonaryVrr);
 
     m_VrrPresentCapFps = !sync.enableVrr ? -1 : sync.nonaryVrr ? 0 : sync.presentCapFps;
 
@@ -3160,8 +3160,7 @@ bool Session::rebuildDecoderForReconnect()
                                       : StreamingPreferences::VRR_IMPL_FORK,
                        m_Preferences->vrrLatencyMode, displayHz, smoothVrr)) {
         SDL_UnlockMutex(m_DecoderLock);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "Failed to rebuild decoder for reconnect");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to rebuild decoder for reconnect");
         return false;
     }
 
@@ -3175,9 +3174,8 @@ bool Session::rebuildDecoderForReconnect()
 
     m_VideoDecoder->setHdrMode(LiGetCurrentHostDisplayHdrMode());
 
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Rebuilt decoder for reconnect: %dx%d@%d", m_ActiveVideoWidth,
-                m_ActiveVideoHeight, m_ActiveVideoFrameRate);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Rebuilt decoder for reconnect: %dx%d@%d",
+                m_ActiveVideoWidth, m_ActiveVideoHeight, m_ActiveVideoFrameRate);
     return true;
 }
 
