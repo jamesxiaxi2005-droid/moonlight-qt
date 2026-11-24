@@ -431,6 +431,10 @@ private:
                        bool enableVideoEnhancement, bool ignoreAspectRatio, bool testOnly,
                        IVideoDecoder*& chosenDecoder);
 
+    // Replaces the decoder in place for tryReconnect(), which cannot wait for the
+    // SDL_RENDER_DEVICE_RESET path in exec() to run while it blocks that loop.
+    bool rebuildDecoderForReconnect();
+
     static bool chooseDecoder(StreamingPreferences::VideoDecoderSelection vds,
                               StreamingPreferences::RendererSelection renderer, SDL_Window* window,
                               int videoFormat, int width, int height, int frameRate,

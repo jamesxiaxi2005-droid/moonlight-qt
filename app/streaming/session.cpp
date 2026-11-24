@@ -3117,6 +3117,70 @@ static bool queueDecoderReset()
     return SDL_PushEvent(&resetEvent) > 0;
 }
 
+// Replaces the video decoder in place, for callers that cannot wait for the
+// SDL_RENDER_DEVICE_RESET path in exec() to run (tryReconnect() blocks that loop).
+// Only the decoder is rebuilt: the window, V-Sync/VRR policy in effect and the
+// input hooks all stay as they are, because nothing about the window changed.
+bool Session::rebuildDecoderForReconnect()
+{
+    if (m_Window == nullptr) {
+        return false;
+    }
+
+    const int displayHz = StreamUtils::getDisplayRefreshRate(m_Window);
+    const bool tryNonaryVrr =
+        m_Preferences->vrrImplementation == StreamingPreferences::VRR_IMPL_NONARY;
+    const VrrPolicy::SyncDecision sync = VrrPolicy::decide(
+        { m_Preferences->enableVsync, m_Preferences->framePacing, m_Preferences->enableVrr,
+          m_StreamConfig.fps, displayHz, tryNonaryVrr });
+    const bool smoothVrr = VrrPolicy::smoothEnabled(sync.enableVrr, m_Preferences->vrrSmooth,
+                                                    tryNonaryVrr);
+
+    m_VrrPresentCapFps = !sync.enableVrr ? -1 : sync.nonaryVrr ? 0 : sync.presentCapFps;
+
+    // Hold the decoder lock across the swap so drSubmitDecodeUnit() cannot pick up
+    // the old decoder midway through. It trylocks and returns DR_OK when it cannot,
+    // so this cannot deadlock against the decode thread.
+    SDL_LockMutex(m_DecoderLock);
+
+    delete m_VideoDecoder;
+    m_VideoDecoder = nullptr;
+
+    // The old decoder may have queued a reset of its own (device loss or an internal
+    // error); drop it so it cannot tear down the decoder we are about to build.
+    SDL_PumpEvents();
+    SDL_FlushEvent(SDL_RENDER_DEVICE_RESET);
+
+    if (!chooseDecoder(m_Preferences->videoDecoderSelection, m_Preferences->rendererSelection,
+                       m_Window, m_ActiveVideoFormat, m_ActiveVideoWidth, m_ActiveVideoHeight,
+                       m_ActiveVideoFrameRate, sync.enableVsync, sync.enableVrr,
+                       sync.enableFramePacing, m_Preferences->videoEnhancement,
+                       m_Preferences->ignoreAspectRatio, false, m_VideoDecoder,
+                       sync.nonaryVrr ? StreamingPreferences::VRR_IMPL_NONARY
+                                      : StreamingPreferences::VRR_IMPL_FORK,
+                       m_Preferences->vrrLatencyMode, displayHz, smoothVrr)) {
+        SDL_UnlockMutex(m_DecoderLock);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Failed to rebuild decoder for reconnect");
+        return false;
+    }
+
+    SDL_UnlockMutex(m_DecoderLock);
+
+    if (m_InputHandler != nullptr) {
+        m_InputHandler->setWindow(m_Window);
+        m_InputHandler->setStreamDimensions(m_ActiveVideoWidth, m_ActiveVideoHeight);
+        m_InputHandler->updatePointerRegionLock();
+    }
+
+    m_VideoDecoder->setHdrMode(LiGetCurrentHostDisplayHdrMode());
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Rebuilt decoder for reconnect: %dx%d@%d", m_ActiveVideoWidth,
+                m_ActiveVideoHeight, m_ActiveVideoFrameRate);
+    return true;
+}
+
 void Session::restoreResolutionMatchOverride()
 {
     m_ResolutionMatch.explicitOverride = m_HasExplicitStreamQualityOverride;
@@ -5925,6 +5989,25 @@ bool Session::tryReconnect(ReconnectReason reason, bool* teardownStarted)
         if (m_AsyncConnectionSuccess && !m_ConnectionInterrupted) {
             bool settingsFrameReceived = !qualityChange;
             if (qualityChange) {
+                // moonlight-common-c has already called drSetup() with the new video
+                // format, so the decoder still holds the old one. m_RecoveryFrameReceived
+                // is only set from drSubmitDecodeUnit(), which returns DR_OK without
+                // decoding while m_VideoDecoder is null or configured for the previous
+                // size. Waiting for a frame before rebuilding the decoder therefore
+                // deadlocks: no frame arrives, so the rebuild queued below would never
+                // run, while the rebuild is what makes a decodable frame possible.
+                //
+                // Rebuild it here, synchronously, on the reconnect thread. The reset
+                // event pushed after the loop cannot be used for this: exec() is not
+                // running while tryReconnect() blocks, and this loop's SDL_PollEvent
+                // would consume and drop the event anyway. Only the decoder is
+                // replaced here; the window, VRR policy and input hooks are already at
+                // their final state because the window itself did not change.
+                if (rebuildDecoderForReconnect()) {
+                    // Ask for an IDR so the new decoder starts from a key frame.
+                    LiRequestIdrFrame();
+                }
+
                 while (!m_RecoveryFrameReceived && !m_ConnectionInterrupted && !cancelled &&
                        !m_ShouldExit && !m_ConnectionCancel &&
                        m_RecoveryBudget.remainingMs(RecoveryBudget::nowMs()) > 0) {
