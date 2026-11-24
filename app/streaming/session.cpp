@@ -2885,6 +2885,10 @@ private:
     Session* m_Session;
 };
 
+// Windowed sessions open at this height so the window does not cover the whole
+// desktop on hosts whose stream resolution fits the screen.
+static constexpr int kWindowedTargetHeight = 720;
+
 void Session::getWindowDimensions(int& x, int& y,
                                   int& width, int& height)
 {
@@ -2957,17 +2961,30 @@ void Session::getWindowDimensions(int& x, int& y,
 
     SDL_Rect usableBounds;
     if (SDL_GetDisplayUsableBounds(displayIndex, &usableBounds) == 0) {
-        // If the stream resolution fits within the usable display area, use it directly
-        if (m_StreamConfig.width <= usableBounds.w &&
-            m_StreamConfig.height <= usableBounds.h) {
-            width = m_StreamConfig.width;
-            height = m_StreamConfig.height;
+        int desiredWidth = m_StreamConfig.width;
+        int desiredHeight = m_StreamConfig.height;
+
+        // Windowed sessions open at roughly 720p instead of the full stream
+        // resolution. Starting at the stream size makes the window cover the
+        // whole desktop whenever the host resolution fits the usable area,
+        // which reads as full screen and makes the window hard to grab.
+        if (m_Preferences->windowMode == StreamingPreferences::WM_WINDOWED &&
+            desiredHeight > kWindowedTargetHeight) {
+            desiredWidth =
+                ((int)((float)desiredWidth * kWindowedTargetHeight / desiredHeight)) & ~0x1;
+            desiredHeight = kWindowedTargetHeight & ~0x1;
+        }
+
+        // If the requested size fits within the usable display area, use it directly
+        if (desiredWidth <= usableBounds.w && desiredHeight <= usableBounds.h) {
+            width = desiredWidth;
+            height = desiredHeight;
         } else {
             // Otherwise, use 80% of usable bounds and preserve aspect ratio
             SDL_Rect src, dst;
             src.x = src.y = dst.x = dst.y = 0;
-            src.w = m_StreamConfig.width;
-            src.h = m_StreamConfig.height;
+            src.w = desiredWidth;
+            src.h = desiredHeight;
 
             dst.w = ((int)(usableBounds.w * 0.80f)) & ~0x1;  // even width
             dst.h = ((int)(usableBounds.h * 0.80f)) & ~0x1;  // even height
